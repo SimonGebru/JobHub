@@ -1,0 +1,19 @@
+# Node modules
+node_modules
+
+# Vite build
+dist
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+
+# Coverage
+coverage
+
+# Mac
+.DS_Store
