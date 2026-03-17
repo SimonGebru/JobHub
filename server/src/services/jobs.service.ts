@@ -47,6 +47,7 @@ const jobsCache = new NodeCache({
   stdTTL: 300,
   checkperiod: 60,
 });
+
 async function fetchWithTimeout(url: string, timeoutMs = 4000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -145,6 +146,28 @@ function detectSeniority(text: string) {
   return "unknown";
 }
 
+function normalizeValue(value: string | undefined | null) {
+  return (value || "").trim().toLowerCase();
+}
+
+function dedupeJobs(jobs: JobItem[]) {
+  const seen = new Map<string, JobItem>();
+
+  for (const job of jobs) {
+    const key = [
+      normalizeValue(job.title),
+      normalizeValue(job.company),
+      normalizeValue(job.locationText),
+    ].join("|");
+
+    if (!seen.has(key)) {
+      seen.set(key, job);
+    }
+  }
+
+  return Array.from(seen.values());
+}
+
 async function fetchJobtechJobs(params: {
   q: string;
   page: number;
@@ -162,7 +185,7 @@ async function fetchJobtechJobs(params: {
   url.searchParams.set("limit", String(pageSize));
   url.searchParams.set("offset", String(offset));
 
-  const response = await fetchWithTimeout(url.toString(), 4000);
+  const response = await fetchWithTimeout(url.toString(), 8000);
 
   if (!response.ok) {
     throw new Error("Failed to fetch jobs from JobTech API");
@@ -208,11 +231,7 @@ async function fetchGreenhouseJobs(params: { q: string }): Promise<JobItem[]> {
         );
         url.searchParams.set("content", "true");
 
-        const response = await fetch(url.toString(), {
-          headers: {
-            accept: "application/json",
-          },
-        });
+        const response = await fetchWithTimeout(url.toString(), 8000);
 
         if (!response.ok) {
           console.warn(
@@ -222,6 +241,11 @@ async function fetchGreenhouseJobs(params: { q: string }): Promise<JobItem[]> {
         }
 
         const data: any = await response.json();
+
+        console.log(
+          `Greenhouse ${boardToken}:`,
+          Array.isArray(data.jobs) ? data.jobs.length : "not an array"
+        );
 
         return (data.jobs || []).map((job: any) => {
           const descriptionText = job.content || "";
@@ -273,11 +297,7 @@ async function fetchLeverJobs(params: { q: string }): Promise<JobItem[]> {
         const url = new URL(`https://api.lever.co/v0/postings/${company}`);
         url.searchParams.set("mode", "json");
 
-        const response = await fetch(url.toString(), {
-          headers: {
-            accept: "application/json",
-          },
-        });
+        const response = await fetchWithTimeout(url.toString(), 8000);
 
         if (!response.ok) {
           console.warn(
@@ -373,7 +393,7 @@ export async function searchJobs(params: SearchParams): Promise<SearchResult> {
         .split(",")
         .map((item) => item.trim().toLowerCase())
         .filter(Boolean)
-    : ["jobtech", "greenhouse", "lever"];
+    : ["jobtech", "greenhouse"];
 
   const sourceJobs: JobItem[] = [];
 
@@ -405,13 +425,14 @@ export async function searchJobs(params: SearchParams): Promise<SearchResult> {
     remote
   );
 
-  const paginatedJobs = filteredJobs.slice(0, currentPageSize);
+  const dedupedJobs = dedupeJobs(filteredJobs);
+  const paginatedJobs = dedupedJobs.slice(0, currentPageSize);
 
   const result: SearchResult = {
     meta: {
       page: currentPage,
       pageSize: currentPageSize,
-      totalApprox: filteredJobs.length,
+      totalApprox: dedupedJobs.length,
       sourcesUsed: selectedSources,
       cacheHit: false,
     },

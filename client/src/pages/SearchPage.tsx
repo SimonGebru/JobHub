@@ -1,5 +1,14 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Search, SlidersHorizontal, Zap, Save, Building2, GitCompareArrows, ArrowUpDown, History } from "lucide-react";
+import {
+  Search,
+  SlidersHorizontal,
+  Zap,
+  Save,
+  Building2,
+  GitCompareArrows,
+  ArrowUpDown,
+  History,
+} from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -11,12 +20,35 @@ import { SearchHistory } from "@/components/SearchHistory";
 import { OnboardingBanner } from "@/components/OnboardingBanner";
 import { JobCompareModal } from "@/components/JobCompareModal";
 import { searchJobs } from "@/services/jobService";
-import { saveJob } from "@/services/savedService";
+import {
+  getSavedJobs,
+  saveJob,
+  updateSavedJob,
+} from "@/services/savedService";
 import { getSources } from "@/services/sourceService";
-import { getPresets, createPreset, renamePreset, deletePreset } from "@/services/presetsService";
-import { getSearchHistory, addSearchEntry, clearSearchHistory, removeSearchEntry } from "@/lib/searchHistory";
+import {
+  getPresets,
+  createPreset,
+  renamePreset,
+  deletePreset,
+} from "@/services/presetsService";
+import {
+  getSearchHistory,
+  addSearchEntry,
+  clearSearchHistory,
+  removeSearchEntry,
+} from "@/lib/searchHistory";
 import { calculateMatchScore } from "@/lib/matchScore";
-import type { Job, SearchParams, SearchResponse, SearchPreset, Seniority, SortOption, JobLanguage } from "@/types/job";
+import type {
+  Job,
+  SearchParams,
+  SearchResponse,
+  SearchPreset,
+  Seniority,
+  SortOption,
+  JobLanguage,
+  SavedJob,
+} from "@/types/job";
 import type { SearchHistoryEntry } from "@/lib/searchHistory";
 import type { MatchResult } from "@/lib/matchScore";
 import { useToast } from "@/hooks/use-toast";
@@ -31,6 +63,7 @@ const sortOptions: { value: SortOption; label: string }[] = [
 
 export default function SearchPage() {
   const { toast } = useToast();
+
   const [q, setQ] = useState("");
   const [location, setLocation] = useState("");
   const [remote, setRemote] = useState(false);
@@ -43,7 +76,7 @@ export default function SearchPage() {
   const [page, setPage] = useState(1);
   const [result, setResult] = useState<SearchResponse | null>(null);
   const [loading, setLoading] = useState(false);
-  const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+  const [savedMap, setSavedMap] = useState<Record<string, string>>({});
   const [showFilters, setShowFilters] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
@@ -56,74 +89,142 @@ export default function SearchPage() {
   const [showCompare, setShowCompare] = useState(false);
   const [modalNotes, setModalNotes] = useState("");
 
+  const savedIds = useMemo(() => new Set(Object.keys(savedMap)), [savedMap]);
+
   useEffect(() => {
     getPresets().then(setPresets).catch(() => {});
     getSources().then((s) => setHasSources(s.length > 0)).catch(() => {});
     setHistory(getSearchHistory());
+
+    getSavedJobs()
+      .then((jobs: SavedJob[]) => {
+        const map = jobs.reduce<Record<string, string>>((acc, savedJob) => {
+          acc[savedJob.jobId] = savedJob.id;
+          return acc;
+        }, {});
+        setSavedMap(map);
+      })
+      .catch(() => {});
   }, []);
 
-  const buildParams = useCallback((p = 1): SearchParams => ({
-    q: q || undefined,
-    location: location || undefined,
-    remote: remote || undefined,
-    withinDays: withinDays || undefined,
-    sources: selectedSources.length > 0 ? selectedSources : undefined,
-    page: p,
-    pageSize: 20,
-  }), [q, location, remote, withinDays, selectedSources]);
+  const buildParams = useCallback(
+    (p = 1): SearchParams => ({
+      q: q || undefined,
+      location: location || undefined,
+      remote: remote || undefined,
+      withinDays: withinDays || undefined,
+      sources: selectedSources.length > 0 ? selectedSources : undefined,
+      page: p,
+      pageSize: 20,
+    }),
+    [q, location, remote, withinDays, selectedSources]
+  );
 
-  const doSearch = useCallback(async (p = 1) => {
-    setLoading(true);
-    try {
-      const params = buildParams(p);
-      const res = await searchJobs(params, selectedSeniorities, selectedSkills);
-      // Language filter (client-side for mock)
-      if (selectedLanguages.length > 0) {
-        res.jobs = res.jobs.filter((j) => j.language && selectedLanguages.includes(j.language));
-        res.meta.totalApprox = res.jobs.length;
+  const doSearch = useCallback(
+    async (p = 1) => {
+      setLoading(true);
+
+      try {
+        const params = buildParams(p);
+        const res = await searchJobs(params, selectedSeniorities, selectedSkills);
+
+        if (selectedLanguages.length > 0) {
+          res.jobs = res.jobs.filter(
+            (j) => j.language && selectedLanguages.includes(j.language)
+          );
+          res.meta.totalApprox = res.jobs.length;
+        }
+
+        setResult(res);
+        setPage(p);
+
+        if (params.q || params.location || params.remote) {
+          setHistory(addSearchEntry(params));
+        }
+      } catch {
+        toast({
+          title: "Sökfel",
+          description: "Kunde inte hämta jobb",
+          variant: "destructive",
+        });
+      } finally {
+        setLoading(false);
       }
-      setResult(res);
-      setPage(p);
-      // Add to search history
-      if (params.q || params.location || params.remote) {
-        setHistory(addSearchEntry(params));
-      }
-    } catch {
-      toast({ title: "Sökfel", description: "Kunde inte hämta jobb", variant: "destructive" });
-    } finally {
-      setLoading(false);
-    }
-  }, [buildParams, selectedSeniorities, selectedSkills, selectedLanguages, toast]);
+    },
+    [buildParams, selectedSeniorities, selectedSkills, selectedLanguages, toast]
+  );
 
-  useEffect(() => { doSearch(1); }, []);
+  useEffect(() => {
+    doSearch(1);
+  }, []);
 
-  // Compute match scores
   const matchScores = useMemo(() => {
     if (!result) return new Map<string, MatchResult>();
+
     const map = new Map<string, MatchResult>();
+
     result.jobs.forEach((job) => {
-      map.set(job.id, calculateMatchScore(job, q, location, remote, selectedSkills, selectedSeniorities));
+      map.set(
+        job.id,
+        calculateMatchScore(
+          job,
+          q,
+          location,
+          remote,
+          selectedSkills,
+          selectedSeniorities
+        )
+      );
     });
+
     return map;
   }, [result, q, location, remote, selectedSkills, selectedSeniorities]);
 
-  // Sort jobs
   const sortedJobs = useMemo(() => {
     if (!result) return [];
+
     const jobs = [...result.jobs];
+
     switch (sortBy) {
       case "best_match":
-        return jobs.sort((a, b) => (matchScores.get(b.id)?.score || 0) - (matchScores.get(a.id)?.score || 0));
+        return jobs.sort(
+          (a, b) =>
+            (matchScores.get(b.id)?.score || 0) -
+            (matchScores.get(a.id)?.score || 0)
+        );
+
       case "company_asc":
         return jobs.sort((a, b) => a.company.localeCompare(b.company, "sv"));
+
       case "junior_first": {
-        const order: Record<string, number> = { junior: 0, mid: 1, senior: 2, unknown: 3 };
-        return jobs.sort((a, b) => (order[a.seniority || "unknown"] || 3) - (order[b.seniority || "unknown"] || 3));
+        const order: Record<string, number> = {
+          junior: 0,
+          mid: 1,
+          senior: 2,
+          unknown: 3,
+        };
+
+        return jobs.sort(
+          (a, b) =>
+            (order[a.seniority || "unknown"] || 3) -
+            (order[b.seniority || "unknown"] || 3)
+        );
       }
+
       case "remote_first": {
-        const order: Record<string, number> = { remote: 0, hybrid: 1, onsite: 2, unknown: 3 };
-        return jobs.sort((a, b) => (order[a.remoteType] || 3) - (order[b.remoteType] || 3));
+        const order: Record<string, number> = {
+          remote: 0,
+          hybrid: 1,
+          onsite: 2,
+          unknown: 3,
+        };
+
+        return jobs.sort(
+          (a, b) =>
+            (order[a.remoteType] || 3) - (order[b.remoteType] || 3)
+        );
       }
+
       case "newest":
       default:
         return jobs.sort((a, b) => {
@@ -136,32 +237,75 @@ export default function SearchPage() {
 
   const handleSave = async (job: Job) => {
     try {
-      await saveJob(job);
-      setSavedIds((prev) => new Set(prev).add(job.id));
-      toast({ title: "Sparat", description: `${job.title} hos ${job.company}` });
+      const saved = await saveJob(job);
+
+      setSavedMap((prev) => ({
+        ...prev,
+        [saved.jobId]: saved.id,
+      }));
+
+      toast({
+        title: "Sparat",
+        description: `${job.title} hos ${job.company}`,
+      });
     } catch {
-      toast({ title: "Fel", description: "Kunde inte spara", variant: "destructive" });
+      toast({
+        title: "Fel",
+        description: "Kunde inte spara",
+        variant: "destructive",
+      });
     }
   };
 
   const handleApply = async (job: Job) => {
     try {
-      await saveJob(job);
-      setSavedIds((prev) => new Set(prev).add(job.id));
-      toast({ title: "Markerad som ansökt", description: job.title });
+      const existingSavedId = savedMap[job.id];
+
+      if (existingSavedId) {
+        await updateSavedJob(existingSavedId, { status: "applied" });
+      } else {
+        const saved = await saveJob(job);
+
+        setSavedMap((prev) => ({
+          ...prev,
+          [saved.jobId]: saved.id,
+        }));
+
+        await updateSavedJob(saved.id, { status: "applied" });
+      }
+
+      toast({
+        title: "Markerad som ansökt",
+        description: job.title,
+      });
     } catch {
-      toast({ title: "Fel", variant: "destructive" });
+      toast({
+        title: "Fel",
+        description: "Kunde inte uppdatera status",
+        variant: "destructive",
+      });
     }
   };
 
   const toggleSource = (src: string) =>
-    setSelectedSources((prev) => prev.includes(src) ? prev.filter((s) => s !== src) : [...prev, src]);
+    setSelectedSources((prev) =>
+      prev.includes(src) ? prev.filter((s) => s !== src) : [...prev, src]
+    );
+
   const toggleSeniority = (s: Seniority) =>
-    setSelectedSeniorities((prev) => prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]);
+    setSelectedSeniorities((prev) =>
+      prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]
+    );
+
   const toggleSkill = (skill: string) =>
-    setSelectedSkills((prev) => prev.includes(skill) ? prev.filter((s) => s !== skill) : [...prev, skill]);
+    setSelectedSkills((prev) =>
+      prev.includes(skill) ? prev.filter((s) => s !== skill) : [...prev, skill]
+    );
+
   const toggleLanguage = (lang: JobLanguage) =>
-    setSelectedLanguages((prev) => prev.includes(lang) ? prev.filter((l) => l !== lang) : [...prev, lang]);
+    setSelectedLanguages((prev) =>
+      prev.includes(lang) ? prev.filter((l) => l !== lang) : [...prev, lang]
+    );
 
   const clearAllFilters = () => {
     setRemote(false);
@@ -188,6 +332,7 @@ export default function SearchPage() {
 
   const handleSavePreset = async () => {
     if (!presetName.trim()) return;
+
     try {
       const preset = await createPreset(presetName.trim(), buildParams());
       setPresets((prev) => [...prev, preset]);
@@ -206,32 +351,47 @@ export default function SearchPage() {
 
   const handleRenamePreset = async (id: string, name: string) => {
     await renamePreset(id, name);
-    setPresets((prev) => prev.map((p) => p.id === id ? { ...p, name } : p));
+    setPresets((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, name } : p))
+    );
   };
 
   const applyQuickFilter = (type: "24h" | "7d" | "remote") => {
     if (type === "24h") setWithinDays(1);
     else if (type === "7d") setWithinDays(7);
     else if (type === "remote") setRemote(true);
+
     setTimeout(() => doSearch(1), 50);
   };
 
   const toggleCompare = (job: Job) => {
     setCompareJobs((prev) => {
-      if (prev.find((j) => j.id === job.id)) return prev.filter((j) => j.id !== job.id);
-      if (prev.length >= 3) return prev;
+      if (prev.find((j) => j.id === job.id)) {
+        return prev.filter((j) => j.id !== job.id);
+      }
+
+      if (prev.length >= 3) {
+        return prev;
+      }
+
       return [...prev, job];
     });
   };
 
-  const totalPages = result ? Math.ceil(result.meta.totalApprox / result.meta.pageSize) : 0;
+  const totalPages = result
+    ? Math.ceil(result.meta.totalApprox / result.meta.pageSize)
+    : 0;
+
   const activeFilterCount =
-    (remote ? 1 : 0) + (withinDays ? 1 : 0) + selectedSources.length +
-    selectedSeniorities.length + selectedSkills.length + selectedLanguages.length;
+    (remote ? 1 : 0) +
+    (withinDays ? 1 : 0) +
+    selectedSources.length +
+    selectedSeniorities.length +
+    selectedSkills.length +
+    selectedLanguages.length;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      {/* Hero */}
       <div className="pt-2 pb-2">
         <h1 className="text-3xl font-bold text-foreground">
           Hitta ditt nästa <span className="text-primary">drömjobb</span>
@@ -251,9 +411,13 @@ export default function SearchPage() {
         />
       )}
 
-      <SearchPresets presets={presets} onApply={applyPreset} onDelete={handleDeletePreset} onRename={handleRenamePreset} />
+      <SearchPresets
+        presets={presets}
+        onApply={applyPreset}
+        onDelete={handleDeletePreset}
+        onRename={handleRenamePreset}
+      />
 
-      {/* Search bar */}
       <div className="flex gap-2">
         <div className="relative flex-1">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -265,6 +429,7 @@ export default function SearchPage() {
             className="pl-10 h-11 rounded-xl"
           />
         </div>
+
         <Input
           placeholder="Ort"
           value={location}
@@ -272,12 +437,16 @@ export default function SearchPage() {
           onKeyDown={(e) => e.key === "Enter" && doSearch(1)}
           className="w-28 sm:w-36 h-11 rounded-xl"
         />
-        <Button onClick={() => doSearch(1)} disabled={loading} className="h-11 px-5 rounded-xl">
+
+        <Button
+          onClick={() => doSearch(1)}
+          disabled={loading}
+          className="h-11 px-5 rounded-xl"
+        >
           {loading ? "Söker..." : "Sök"}
         </Button>
       </div>
 
-      {/* Toolbar: filters, quick buttons, sort, compare, save preset, history */}
       <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={() => setShowFilters(!showFilters)}
@@ -291,15 +460,32 @@ export default function SearchPage() {
             </span>
           )}
         </button>
-        <span className="text-border">|</span>
-        <button onClick={() => applyQuickFilter("24h")} className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
-          <Zap className="h-3 w-3" /> 24h
-        </button>
-        <button onClick={() => applyQuickFilter("7d")} className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors">7d</button>
-        <button onClick={() => applyQuickFilter("remote")} className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors">Remote</button>
+
         <span className="text-border">|</span>
 
-        {/* Sort */}
+        <button
+          onClick={() => applyQuickFilter("24h")}
+          className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
+        >
+          <Zap className="h-3 w-3" /> 24h
+        </button>
+
+        <button
+          onClick={() => applyQuickFilter("7d")}
+          className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+        >
+          7d
+        </button>
+
+        <button
+          onClick={() => applyQuickFilter("remote")}
+          className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+        >
+          Remote
+        </button>
+
+        <span className="text-border">|</span>
+
         <div className="inline-flex items-center gap-1">
           <ArrowUpDown className="h-3 w-3 text-muted-foreground" />
           <select
@@ -308,22 +494,24 @@ export default function SearchPage() {
             className="text-xs font-medium bg-transparent text-muted-foreground hover:text-foreground border-none outline-none cursor-pointer"
           >
             {sortOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
             ))}
           </select>
         </div>
+
         <span className="text-border">|</span>
 
-        {/* History toggle */}
         <button
           onClick={() => setShowHistory(!showHistory)}
           className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
         >
           <History className="h-3 w-3" /> Historik
         </button>
+
         <span className="text-border">|</span>
 
-        {/* Save preset */}
         {showSavePreset ? (
           <div className="inline-flex items-center gap-1.5">
             <Input
@@ -334,8 +522,21 @@ export default function SearchPage() {
               autoFocus
               className="h-7 w-32 text-xs rounded-lg px-2"
             />
-            <Button size="sm" onClick={handleSavePreset} className="h-7 text-xs rounded-lg px-2">Spara</Button>
-            <Button size="sm" variant="ghost" onClick={() => setShowSavePreset(false)} className="h-7 text-xs rounded-lg px-2">Avbryt</Button>
+            <Button
+              size="sm"
+              onClick={handleSavePreset}
+              className="h-7 text-xs rounded-lg px-2"
+            >
+              Spara
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setShowSavePreset(false)}
+              className="h-7 text-xs rounded-lg px-2"
+            >
+              Avbryt
+            </Button>
           </div>
         ) : (
           <button
@@ -346,7 +547,6 @@ export default function SearchPage() {
           </button>
         )}
 
-        {/* Compare button */}
         {compareJobs.length > 0 && (
           <>
             <span className="text-border">|</span>
@@ -362,54 +562,99 @@ export default function SearchPage() {
           </>
         )}
 
-        {/* Result count */}
         {result && (
           <span className="text-sm text-muted-foreground ml-auto">
             {result.meta.totalApprox} resultat
-            {result.meta.cacheHit && <Badge variant="outline" className="ml-2 text-[11px]">Cache</Badge>}
+            {result.meta.cacheHit && (
+              <Badge variant="outline" className="ml-2 text-[11px]">
+                Cache
+              </Badge>
+            )}
           </span>
         )}
       </div>
 
-      {/* Search history */}
       {showHistory && (
         <SearchHistory
           entries={history}
           onApply={applyHistoryEntry}
           onRemove={(id) => setHistory(removeSearchEntry(id))}
-          onClearAll={() => { clearSearchHistory(); setHistory([]); }}
+          onClearAll={() => {
+            clearSearchHistory();
+            setHistory([]);
+          }}
         />
       )}
 
-      {/* Active filters summary */}
       {activeFilterCount > 0 && !showFilters && (
         <div className="flex flex-wrap items-center gap-1.5 text-xs">
           <span className="text-muted-foreground">Aktiva:</span>
-          {remote && <Badge variant="secondary" className="text-[11px]">Remote</Badge>}
-          {withinDays > 0 && <Badge variant="secondary" className="text-[11px]">{withinDays}d</Badge>}
-          {selectedSeniorities.map((s) => <Badge key={s} variant="secondary" className="text-[11px] capitalize">{s}</Badge>)}
-          {selectedSkills.map((s) => <Badge key={s} variant="secondary" className="text-[11px]">{s}</Badge>)}
-          {selectedSources.map((s) => <Badge key={s} variant="secondary" className="text-[11px]">{s}</Badge>)}
-          {selectedLanguages.map((l) => <Badge key={l} variant="secondary" className="text-[11px] uppercase">{l}</Badge>)}
-          <button onClick={clearAllFilters} className="text-muted-foreground hover:text-foreground ml-1 underline">Rensa</button>
+          {remote && (
+            <Badge variant="secondary" className="text-[11px]">
+              Remote
+            </Badge>
+          )}
+          {withinDays > 0 && (
+            <Badge variant="secondary" className="text-[11px]">
+              {withinDays}d
+            </Badge>
+          )}
+          {selectedSeniorities.map((s) => (
+            <Badge
+              key={s}
+              variant="secondary"
+              className="text-[11px] capitalize"
+            >
+              {s}
+            </Badge>
+          ))}
+          {selectedSkills.map((s) => (
+            <Badge key={s} variant="secondary" className="text-[11px]">
+              {s}
+            </Badge>
+          ))}
+          {selectedSources.map((s) => (
+            <Badge key={s} variant="secondary" className="text-[11px]">
+              {s}
+            </Badge>
+          ))}
+          {selectedLanguages.map((l) => (
+            <Badge
+              key={l}
+              variant="secondary"
+              className="text-[11px] uppercase"
+            >
+              {l}
+            </Badge>
+          ))}
+          <button
+            onClick={clearAllFilters}
+            className="text-muted-foreground hover:text-foreground ml-1 underline"
+          >
+            Rensa
+          </button>
         </div>
       )}
 
-      {/* Filters panel */}
       {showFilters && (
         <SearchFilters
-          remote={remote} setRemote={setRemote}
-          withinDays={withinDays} setWithinDays={setWithinDays}
-          selectedSources={selectedSources} toggleSource={toggleSource}
-          selectedSeniorities={selectedSeniorities} toggleSeniority={toggleSeniority}
-          selectedSkills={selectedSkills} toggleSkill={toggleSkill}
-          selectedLanguages={selectedLanguages} toggleLanguage={toggleLanguage}
+          remote={remote}
+          setRemote={setRemote}
+          withinDays={withinDays}
+          setWithinDays={setWithinDays}
+          selectedSources={selectedSources}
+          toggleSource={toggleSource}
+          selectedSeniorities={selectedSeniorities}
+          toggleSeniority={toggleSeniority}
+          selectedSkills={selectedSkills}
+          toggleSkill={toggleSkill}
+          selectedLanguages={selectedLanguages}
+          toggleLanguage={toggleLanguage}
           onClearAll={clearAllFilters}
           activeFilterCount={activeFilterCount}
         />
       )}
 
-      {/* Results */}
       <div className="space-y-3">
         {loading && (
           <div className="py-16 text-center">
@@ -417,38 +662,62 @@ export default function SearchPage() {
             <p className="text-sm text-muted-foreground">Söker jobb...</p>
           </div>
         )}
-        {!loading && sortedJobs.map((job) => (
-          <JobCard
-            key={job.id}
-            job={job}
-            onSave={handleSave}
-            onApply={handleApply}
-            isSaved={savedIds.has(job.id)}
-            onClick={() => { setSelectedJob(job); setModalNotes(""); }}
-            matchResult={matchScores.get(job.id)}
-            isCompareSelected={!!compareJobs.find((j) => j.id === job.id)}
-            onToggleCompare={toggleCompare}
-            compareDisabled={compareJobs.length >= 3}
-          />
-        ))}
+
+        {!loading &&
+          sortedJobs.map((job) => (
+            <JobCard
+              key={job.id}
+              job={job}
+              onSave={handleSave}
+              onApply={handleApply}
+              isSaved={savedIds.has(job.id)}
+              onClick={() => {
+                setSelectedJob(job);
+                setModalNotes("");
+              }}
+              matchResult={matchScores.get(job.id)}
+              isCompareSelected={!!compareJobs.find((j) => j.id === job.id)}
+              onToggleCompare={toggleCompare}
+              compareDisabled={compareJobs.length >= 3}
+            />
+          ))}
+
         {!loading && result && result.jobs.length === 0 && (
           <div className="py-16 text-center">
             <Search className="h-10 w-10 mx-auto mb-3 text-muted-foreground/30" />
-            <p className="text-muted-foreground">Inga jobb hittades. Prova bredare sökord.</p>
+            <p className="text-muted-foreground">
+              Inga jobb hittades. Prova bredare sökord.
+            </p>
           </div>
         )}
       </div>
 
-      {/* Pagination */}
       {totalPages > 1 && (
         <div className="flex justify-center items-center gap-3 pt-4 pb-2">
-          <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => doSearch(page - 1)} className="rounded-lg">Föregående</Button>
-          <span className="text-sm text-muted-foreground tabular-nums">{page} / {totalPages}</span>
-          <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => doSearch(page + 1)} className="rounded-lg">Nästa</Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page <= 1}
+            onClick={() => doSearch(page - 1)}
+            className="rounded-lg"
+          >
+            Föregående
+          </Button>
+          <span className="text-sm text-muted-foreground tabular-nums">
+            {page} / {totalPages}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page >= totalPages}
+            onClick={() => doSearch(page + 1)}
+            className="rounded-lg"
+          >
+            Nästa
+          </Button>
         </div>
       )}
 
-      {/* Job detail modal */}
       <JobDetailModal
         job={selectedJob}
         open={!!selectedJob}
@@ -461,7 +730,6 @@ export default function SearchPage() {
         onNotesChange={setModalNotes}
       />
 
-      {/* Compare modal */}
       <JobCompareModal
         jobs={compareJobs}
         open={showCompare}
